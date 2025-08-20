@@ -1,0 +1,155 @@
+<!DOCTYPE html>
+<html>
+
+<head>
+    <title>Barangay + Purok Shape Getter</title>
+    <link rel="stylesheet" href="https://unpkg.com/leaflet/dist/leaflet.css" />
+    <script src="https://unpkg.com/leaflet/dist/leaflet.js"></script>
+    <script src="osmtogeojson.js"></script> <!-- keep local copy -->
+    <style>
+        #map {
+            height: 100vh;
+            width: 100%;
+        }
+
+        #controls {
+            position: absolute;
+            top: 10px;
+            left: 50%;
+            transform: translateX(-50%);
+            z-index: 1000;
+            background: white;
+            padding: 10px;
+            border-radius: 6px;
+            box-shadow: 0 2px 6px rgba(0, 0, 0, 0.3);
+        }
+
+        #download {
+            margin-left: 10px;
+            display: none;
+        }
+    </style>
+</head>
+
+<body>
+    <div id="controls">
+        <input id="search" type="text" placeholder="Enter barangay (e.g. Sillawit, Cauayan City)">
+        <button onclick="searchBarangay()">Search</button>
+        <button id="download" onclick="downloadGeoJSON()">Download GeoJSON</button>
+    </div>
+    <div id="map"></div>
+
+    <script>
+        var map = L.map('map').setView([16.9293, 121.7740], 13); // Isabela area
+        L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
+            maxZoom: 19
+        }).addTo(map);
+
+        var currentLayer = null;
+        var purokLayer = null;
+        var currentGeoJSON = null;
+
+        async function searchBarangay() {
+            let name = document.getElementById("search").value.trim();
+            if (!name) return;
+
+            // Barangay query
+            let query = `
+            [out:json][timeout:25];
+            relation["boundary"="administrative"]["admin_level"="10"]["name"="${name}"];
+            out geom;
+          `;
+            let url = "https://overpass-api.de/api/interpreter?data=" + encodeURIComponent(query);
+
+            let response = await fetch(url);
+            let data = await response.json();
+
+            if (!data.elements.length) {
+                alert("❌ No barangay boundary found for: " + name);
+                document.getElementById("download").style.display = "none";
+                return;
+            }
+
+            // Convert OSM JSON → GeoJSON
+            currentGeoJSON = osmtogeojson(data);
+
+            // Clear old layers
+            if (currentLayer) map.removeLayer(currentLayer);
+            if (purokLayer) map.removeLayer(purokLayer);
+
+            // Draw Barangay
+            currentLayer = L.geoJSON(currentGeoJSON, {
+                style: {
+                    color: "red",
+                    weight: 2,
+                    fillColor: "orange",
+                    fillOpacity: 0.3
+                }
+            }).addTo(map);
+
+            map.fitBounds(currentLayer.getBounds());
+            document.getElementById("download").style.display = "inline-block";
+
+            // Now search for Puroks inside this barangay
+            await searchPuroks(name);
+        }
+
+        async function searchPuroks(barangayName) {
+            let query = `
+            [out:json][timeout:25];
+            relation["boundary"="administrative"]["name"="${barangayName}"]->.a;
+            (
+              node["place"="neighbourhood"](area.a);
+              way["place"="neighbourhood"](area.a);
+              relation["place"="neighbourhood"](area.a);
+              node["place"="hamlet"](area.a);
+              way["place"="hamlet"](area.a);
+              relation["place"="hamlet"](area.a);
+            );
+            out geom;
+          `;
+
+            let url = "https://overpass-api.de/api/interpreter?data=" + encodeURIComponent(query);
+
+            let response = await fetch(url);
+            let data = await response.json();
+
+            if (!data.elements.length) {
+                console.log("ℹ️ No puroks found for " + barangayName);
+                return;
+            }
+
+            let purokGeoJSON = osmtogeojson(data);
+
+            purokLayer = L.geoJSON(purokGeoJSON, {
+                pointToLayer: function (feature, latlng) {
+                    return L.circleMarker(latlng, {
+                        radius: 6,
+                        fillColor: "blue",
+                        color: "#000",
+                        weight: 1,
+                        opacity: 1,
+                        fillOpacity: 0.6
+                    }).bindPopup("Purok: " + (feature.properties.tags.name || "Unnamed"));
+                },
+                style: {
+                    color: "blue",
+                    weight: 1,
+                    fillColor: "lightblue",
+                    fillOpacity: 0.4
+                }
+            }).addTo(map);
+        }
+
+        function downloadGeoJSON() {
+            if (!currentGeoJSON) return;
+            let dataStr = "data:text/json;charset=utf-8," + encodeURIComponent(JSON.stringify(currentGeoJSON));
+            let link = document.createElement("a");
+            link.setAttribute("href", dataStr);
+            link.setAttribute("download", document.getElementById("search").value + ".geojson");
+            link.click();
+        }
+    </script>
+</body>
+
+</html>
